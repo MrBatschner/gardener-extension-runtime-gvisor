@@ -46,20 +46,21 @@ data:
     if ! grep -q containerd.runtimes.runsc "$FILENAME"; then
       echo "Configuring containerd config file for gVisor."
 
-      # version 1 is the default version, even though it is deprecated, ref: https://containerd.io/releases/#daemon-configuration
-      # so use version 2 syntax only if it is explicitly enabled in the config file
-      if grep -q '^version.*=.*2$' "$FILENAME"
-      then
-        cat <<EOF >> $FILENAME
-    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]
-      runtime_type = "io.containerd.runsc.v1"
-    EOF
+      # version 1 is the default version if there is no version header, ref: https://containerd.io/releases/#daemon-configuration
+      # version 2 and version 3 syntax must be announced by their version header
+      if grep -q '^version.*=.*3$' "$FILENAME"; then
+        cri_runtime_path="plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runsc"
+      elif grep -q '^version.*=.*2$' "$FILENAME"; then
+        cri_runtime_path="plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc"
       else
-        cat <<EOF >> $FILENAME
-    [plugins.cri.containerd.runtimes.runsc]
+        cri_runtime_path="plugins.cri.containerd.runtimes.runsc"
+      fi
+
+      cat <<EOF >> $FILENAME
+    
+    [$cri_runtime_path]
       runtime_type = "io.containerd.runsc.v1"
     EOF
-      fi
 
       # restart containerd as no gvisor runtime was configured before
       RESTART_CONTAINERD=true
@@ -67,9 +68,11 @@ data:
       echo "Containerd already configured for gvisor."
     fi
 
-    if ! grep -q plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc.options "$FILENAME"; then
+    runsc_options_path="$cri_runtime_path.options"
+    if ! grep -q "$runsc_options_path" "$FILENAME"; then
       cat <<EOF >> $FILENAME
-    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc.options]
+    
+    [$runsc_options_path]
       TypeUrl = "io.containerd.runsc.v1.options"
       ConfigPath = "/etc/containerd/runsc.toml"
     EOF
@@ -89,14 +92,12 @@ data:
 {{ .Values.config.configFlags | indent 6 }}
     EOF
 
-
     # Restart containerd if runsc.toml was updated
     RUNSC_TOML_MD5SUM_FINAL=$(md5sum /var/host/etc/containerd/runsc.toml)
     if [ "$RUNSC_TOML_MD5SUM_INITIAL" != "$RUNSC_TOML_MD5SUM_FINAL" ]; then
       echo "runsc.toml updated."
       RESTART_CONTAINERD=true
     fi
-
 
     if [ "$RESTART_CONTAINERD" = true ]; then
       echo "Restarting containerd."
